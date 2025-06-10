@@ -2,24 +2,30 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenerativeAI } = require('@google/generative-ai'); // Using GoogleGenerativeAI for Gemini
 
 const app = express();
 const port = process.env.PORT || 3001;
 
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+// Middleware
+app.use(cors()); // Enable CORS for cross-origin requests from your frontend
+app.use(express.json({ limit: '10mb' })); // For parsing application/json bodies, increased limit for potential larger contexts
 
+// Gemini API Key from environment variables
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
+// Ensure API key is set
 if (!GEMINI_API_KEY) {
   console.error("GEMINI_API_KEY is not set in the .env file!");
-  process.exit(1);
+  console.error("Please create a .env file in the backend directory with GEMINI_API_KEY='YOUR_API_KEY_HERE'");
+  process.exit(1); // Exit if API key is missing
 }
 
+// Initialize Gemini Generative AI model
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-const textOnlyModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+const textOnlyModel = genAI.getGenerativeModel({ model: "gemini-2.0-flash" }); // Using gemini-2.0-flash as specified
 
+// Helper function to format CSV summary for Gemini insights
 function formatSummaryForGemini(summary) {
   let prompt = "Analyze the following AWS billing data summary. Provide a **brief, actionable summary** of key cost optimization insights. Focus on **top 3-5 recommendations** only. Use bullet points for recommendations. Keep the overall response **under 200 words**.\n\n";
 
@@ -63,10 +69,12 @@ function formatSummaryForGemini(summary) {
 
 // --- API Routes ---
 
+// Default route to check if backend is running
 app.get('/', (req, res) => {
   res.send('Cloud Cost Dashboard Backend is running!');
 });
 
+// Endpoint for general AI insights based on CSV summary
 app.post('/api/ai/insights', async (req, res) => {
   const { csvSummary } = req.body;
 
@@ -82,7 +90,7 @@ app.post('/api/ai/insights', async (req, res) => {
     const result = await textOnlyModel.generateContent({
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: {
-        maxOutputTokens: 200,
+        maxOutputTokens: 200, // Limit output tokens for concise insights
       },
     });
     const response = result.response;
@@ -90,6 +98,7 @@ app.post('/api/ai/insights', async (req, res) => {
 
     res.json({
       insights: text,
+      // Also return the summary data, as it might be used on the frontend
       totalOverallCost: csvSummary.totalOverallCost,
       serviceCosts: csvSummary.serviceCosts,
       topExpensiveResources: csvSummary.topExpensiveResources,
@@ -99,6 +108,7 @@ app.post('/api/ai/insights', async (req, res) => {
 
   } catch (error) {
     console.error('Error calling Gemini API for insights:', error.message);
+    // Log more details if available from the Gemini API response
     if (error.response && error.response.candidates) {
         console.error("Gemini API Error details:", JSON.stringify(error.response.candidates, null, 2));
     }
@@ -106,6 +116,7 @@ app.post('/api/ai/insights', async (req, res) => {
   }
 });
 
+// Endpoint for AI cost estimation
 app.post('/api/ai/estimate', async (req, res) => {
   const { resourceType, size, region, duration } = req.body;
 
@@ -127,7 +138,7 @@ app.post('/api/ai/estimate', async (req, res) => {
     const result = await textOnlyModel.generateContent({
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       generationConfig: {
-        maxOutputTokens: 150,
+        maxOutputTokens: 150, // Limit output tokens for concise estimate
       },
     });
     const response = result.response;
@@ -139,7 +150,7 @@ app.post('/api/ai/estimate', async (req, res) => {
   }
 });
 
-// --- NEW CHAT ENDPOINT ---
+// Endpoint for AI chat interactions
 app.post('/api/ai/chat', async (req, res) => {
   const { userQuestion, csvContext } = req.body;
 
@@ -183,6 +194,46 @@ app.post('/api/ai/chat', async (req, res) => {
     }
     res.status(500).json({ error: 'Failed to get AI chat response.', details: error.message });
   }
+});
+
+// NEW: AI Recommendation for Cost Savings Panel
+// This endpoint receives context about a specific optimization opportunity
+// and uses AI to generate actionable recommendations.
+app.post('/api/ai/recommendation', async (req, res) => {
+    const { promptContext } = req.body; // promptContext will describe the specific saving opportunity
+
+    if (!promptContext) {
+        return res.status(400).json({ error: 'Prompt context for recommendation is required.' });
+    }
+
+    try {
+        const chatCompletion = await textOnlyModel.generateContent({
+            contents: [{
+                role: "user",
+                // CRUCIAL: Combine the strict instruction directly in the user message,
+                // and pass the detailed context as a second part.
+                parts: [
+                    { text: `Provide a **single, extremely concise sentence or a maximum of two very short bullet points** with the most important actionable recommendation for this cloud cost optimization opportunity. Focus only on the primary step to take.` },
+                    { text: `Opportunity Details: ${promptContext}` }
+                ]
+            }],
+            generationConfig: {
+                maxOutputTokens: 50, // Even further reduced
+                temperature: 0.2, // Lower temperature for less creativity, more directness
+            },
+        });
+        const response = chatCompletion.response;
+        const text = response.text();
+        res.json({ recommendation: text }); // Send the AI's recommendation back to the frontend
+    } catch (error) {
+        console.error('Error generating AI recommendation:', error);
+        // Provide more detailed error info for frontend debugging
+        res.status(500).json({
+            error: 'Failed to generate AI recommendation.',
+            details: error.message || 'An unknown error occurred.',
+            geminiErrorDetail: error.response ? JSON.stringify(error.response.candidates, null, 2) : 'No specific Gemini error response.'
+        });
+    }
 });
 
 
