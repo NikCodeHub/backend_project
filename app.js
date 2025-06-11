@@ -1,4 +1,5 @@
 // cloud-cost-dashboard-frontend/backend/index.js
+// --- VERIFICATION TAG: v20250611_SECURITY_COMPLIANCE_FINAL_FIX ---
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -73,6 +74,12 @@ function formatSummaryForGemini(summary) {
 app.get('/', (req, res) => {
   res.send('Cloud Cost Dashboard Backend is running!');
 });
+
+// DIAGNOSTIC ROUTE (keep this here for testing)
+app.get('/test-backend', (req, res) => {
+    res.json({ message: 'Backend is reachable and test route works! Tag: v20250611_SECURITY_COMPLIANCE_FINAL_FIX' });
+});
+
 
 // Endpoint for general AI insights based on CSV summary
 app.post('/api/ai/insights', async (req, res) => {
@@ -150,38 +157,34 @@ app.post('/api/ai/estimate', async (req, res) => {
   }
 });
 
-// Endpoint for AI chat interactions
+// Endpoint for AI chat interactions (ENHANCED for general cloud questions)
 app.post('/api/ai/chat', async (req, res) => {
-  const { userQuestion, csvContext } = req.body;
+  const { userQuestion, csvContext } = req.body; // csvContext can now be optional or minimal
 
   if (!userQuestion) {
     return res.status(400).json({ error: 'No user question provided.' });
   }
-  if (!csvContext) {
-    return res.status(400).json({ error: 'No CSV context provided for the chat.' });
+
+  let chatPrompt = `You are an expert AWS Cloud Operations and FinOps Assistant. Your goal is to help users understand, manage, and operate their AWS resources efficiently. Provide clear, concise, and accurate answers based on your extensive knowledge of AWS services, best practices (cost, security, operations), and common cloud concepts.`;
+
+  // Conditionally add context if CSV data is available and potentially relevant
+  if (csvContext && csvContext.hasData) {
+    chatPrompt += `\n\nUser has uploaded AWS billing data. While your primary role is general cloud assistance, if the question seems related to their costs, you can infer context. Here's a brief indicator: Data exists for ${csvContext.numRowsProcessed} line items.`;
+    // If you want to send more detailed summary, you'd generate it here from parsedCsvData if available
+    // For now, let's keep it minimal for general chat.
   }
 
-  // Construct a detailed prompt for the AI, including the summarized CSV context
-  const chatPrompt = `You are an expert AWS cost optimization assistant.
-  A user has uploaded their AWS billing data. Here is a summary of their data:
-  Total Overall Cost: ${csvContext.totalOverallCost || 'N/A'}
-  Top Services by Cost: ${csvContext.topServices || 'N/A'}
-  (Note: This context is based on ${csvContext.numRowsProcessed} rows. ${csvContext.dataTruncated ? 'The original CSV was larger, so this is a partial view.' : ''})
+  chatPrompt += `\n\nUser's question: "${userQuestion}"`;
 
-  The user is asking the following question about their AWS costs:
-  "${userQuestion}"
-
-  Based on the provided billing data summary and your AWS cost optimization knowledge, answer the user's question concisely and directly. If you need more information from the full CSV, state what information you would need. Keep your answer focused on cost optimization and provide actionable advice where relevant.
-  `;
-
-  console.log("Sending chat prompt to Gemini (first 500 chars):", chatPrompt.substring(0, 500) + "...");
+  console.log("Sending general cloud chat prompt to Gemini (first 500 chars):", chatPrompt.substring(0, 500) + "...");
   console.log("Full chat prompt length:", chatPrompt.length);
 
   try {
     const result = await textOnlyModel.generateContent({
       contents: [{ role: "user", parts: [{ text: chatPrompt }] }],
       generationConfig: {
-        maxOutputTokens: 250, // Limit chat response length
+        maxOutputTokens: 300, // Increased tokens for more comprehensive general answers
+        temperature: 0.5, // Balanced for informative and coherent responses
       },
     });
     const response = result.response;
@@ -196,9 +199,7 @@ app.post('/api/ai/chat', async (req, res) => {
   }
 });
 
-// NEW: AI Recommendation for Cost Savings Panel
-// This endpoint receives context about a specific optimization opportunity
-// and uses AI to generate actionable recommendations.
+// AI Recommendation for Cost Savings Panel
 app.post('/api/ai/recommendation', async (req, res) => {
     const { promptContext } = req.body; // promptContext will describe the specific saving opportunity
 
@@ -210,15 +211,13 @@ app.post('/api/ai/recommendation', async (req, res) => {
         const chatCompletion = await textOnlyModel.generateContent({
             contents: [{
                 role: "user",
-                // CRUCIAL: Combine the strict instruction directly in the user message,
-                // and pass the detailed context as a second part.
                 parts: [
                     { text: `Provide a **single, extremely concise sentence or a maximum of two very short bullet points** with the most important actionable recommendation for this cloud cost optimization opportunity. Focus only on the primary step to take.` },
                     { text: `Opportunity Details: ${promptContext}` }
                 ]
             }],
             generationConfig: {
-                maxOutputTokens: 50, // Even further reduced
+                maxOutputTokens: 50, // Even further reduced for conciseness
                 temperature: 0.2, // Lower temperature for less creativity, more directness
             },
         });
@@ -227,9 +226,200 @@ app.post('/api/ai/recommendation', async (req, res) => {
         res.json({ recommendation: text }); // Send the AI's recommendation back to the frontend
     } catch (error) {
         console.error('Error generating AI recommendation:', error);
-        // Provide more detailed error info for frontend debugging
         res.status(500).json({
             error: 'Failed to generate AI recommendation.',
+            details: error.message || 'An unknown error occurred.',
+            geminiErrorDetail: error.response ? JSON.stringify(error.response.candidates, null, 2) : 'No specific Gemini error response.'
+        });
+    }
+});
+
+// NEW: AI Anomaly Explanation Endpoint
+app.post('/api/ai/explain-anomaly', async (req, res) => {
+    const { promptContext } = req.body;
+
+    if (!promptContext) {
+        return res.status(400).json({ error: 'Prompt context for anomaly explanation is required.' });
+    }
+
+    try {
+        const chatCompletion = await textOnlyModel.generateContent({
+            contents: [{
+                role: "user",
+                parts: [
+                    { text: `As an AWS cost forensic analyst, provide a **concise (1-3 sentences) explanation** for the likely root cause of the following cloud cost anomaly and suggest **one immediate investigation step**. Focus on the most probable reason based on the provided details.` },
+                    { text: `Anomaly Details: ${promptContext}` }
+                ]
+            }],
+            generationConfig: {
+                maxOutputTokens: 100, // Concise explanation
+                temperature: 0.4, // A bit more creative than recommendations, but still focused
+            },
+        });
+        const response = chatCompletion.response;
+        const text = response.text();
+        res.json({ explanation: text });
+    } catch (error) {
+        console.error('Error generating AI anomaly explanation:', error);
+        res.status(500).json({
+            error: 'Failed to generate AI anomaly explanation.',
+            details: error.message || 'An unknown error occurred.',
+            geminiErrorDetail: error.response ? JSON.stringify(error.response.candidates, null, 2) : 'No specific Gemini error response.'
+        });
+    }
+});
+
+// NEW: AI Resource Optimization Endpoint
+app.post('/api/ai/resource-optimization', async (req, res) => {
+    const { promptContext } = req.body;
+
+    if (!promptContext) {
+        return res.status(400).json({ error: 'Prompt context for resource optimization is required.' });
+    }
+
+    try {
+        const chatCompletion = await textOnlyModel.generateContent({
+            contents: [{
+                role: "user",
+                parts: [
+                    { text: `As an expert AWS resource optimization specialist, provide a **detailed, actionable plan (3-5 bullet points)** for the following cloud resource optimization opportunity. Focus on concrete steps a user can take.` },
+                    { text: `Opportunity Details: ${promptContext}` }
+                ]
+            }],
+            generationConfig: {
+                maxOutputTokens: 200,
+                temperature: 0.3,
+            },
+        });
+        const response = chatCompletion.response;
+        const text = response.text();
+        res.json({ optimizationPlan: text });
+    } catch (error) {
+        console.error('Error generating AI resource optimization plan:', error);
+        res.status(500).json({
+            error: 'Failed to generate AI resource optimization plan.',
+            details: error.message || 'An unknown error occurred.',
+            geminiErrorDetail: error.response ? JSON.stringify(error.response.candidates, null, 2) : 'No specific Gemini error response.'
+        });
+    }
+});
+
+// NEW: AI Troubleshooting Endpoint
+app.post('/api/ai/troubleshoot', async (req, res) => {
+    const { promptContext } = req.body;
+
+    if (!promptContext) {
+        return res.status(400).json({ error: 'Prompt context for troubleshooting is required.' });
+    }
+
+    try {
+        const chatCompletion = await textOnlyModel.generateContent({
+            contents: [{
+                role: "user",
+                parts: [
+                    { text: `As a Senior Cloud Support Engineer for AWS, analyze the following operational problem and provide:
+                    1.  **Likely Causes:** 1-3 potential reasons for this problem.
+                    2.  **Diagnostic Steps:** 2-3 immediate, actionable steps the user can take to investigate.
+                    3.  **Common Solutions:** 1-2 common solutions if the problem is identified.
+                    Format your response clearly with bolded headings for each section. Keep the overall response concise and directly focused on the problem.` },
+                    { text: `User's Problem: ${promptContext}` }
+                ]
+            }],
+            generationConfig: {
+                maxOutputTokens: 250, // Allow a bit more for structured troubleshooting steps
+                temperature: 0.4, // Balanced for informative and accurate troubleshooting
+            },
+        });
+        const response = chatCompletion.response;
+        const text = response.text();
+        res.json({ troubleshootResponse: text });
+    } catch (error) {
+        console.error('Error generating AI troubleshooting response:', error);
+        res.status(500).json({
+            error: 'Failed to generate AI troubleshooting response.',
+            details: error.message || 'An unknown error occurred.',
+            geminiErrorDetail: error.response ? JSON.stringify(error.response.candidates, null, 2) : 'No specific Gemini error response.'
+        });
+    }
+});
+
+// NEW: AI Architecture Assistant Endpoint
+app.post('/api/ai/architecture-assistant', async (req, res) => {
+    const { promptContext } = req.body; // user's architectural problem/goal
+
+    if (!promptContext) {
+        return res.status(400).json({ error: 'Prompt context for architecture assistant is required.' });
+    }
+
+    try {
+        const chatCompletion = await textOnlyModel.generateContent({
+            contents: [{
+                role: "user",
+                parts: [
+                    { text: `As an expert AWS Solutions Architect, provide guidance for the following cloud solution request. Your response should include:
+                    1.  **Recommended AWS Services:** List 3-5 key services and briefly explain their role.
+                    2.  **Conceptual Architecture:** Describe how these services would conceptually integrate at a high level.
+                    3.  **Key Considerations:** Mention important aspects like scalability, security, main cost drivers, and reliability for this architecture.
+                    Format your response clearly with bolded headings for each section. Keep the overall response comprehensive but concise.` },
+                    { text: `User's Request: ${promptContext}` }
+                ]
+            }],
+            generationConfig: {
+                maxOutputTokens: 400, // Increased tokens for more detailed architectural guidance
+                temperature: 0.7, // Slightly higher for more creative/diverse architectural suggestions
+            },
+        });
+        const response = chatCompletion.response;
+        const text = response.text();
+        res.json({ architectureGuidance: text });
+    } catch (error) {
+        console.error('Error generating AI architectural guidance:', error);
+        res.status(500).json({
+            error: 'Failed to generate AI architectural guidance.',
+            details: error.message || 'An unknown error occurred.',
+            geminiErrorDetail: error.response ? JSON.stringify(error.response.candidates, null, 2) : 'No specific Gemini error response.'
+        });
+    }
+});
+
+// NEW: AI Security and Compliance Endpoint
+// This endpoint receives a user's query about AWS security or compliance
+// and uses AI to provide expert advice and best practices.
+app.post('/api/ai/security-compliance', async (req, res) => {
+    const { promptContext } = req.body; // user's security/compliance query
+
+    if (!promptContext) {
+        return res.status(400).json({ error: 'Prompt context for security and compliance is required.' });
+    }
+
+    try {
+        console.log('Received request for /api/ai/security-compliance'); // Diagnostic log
+        console.log('Sending prompt to Gemini for security/compliance:', promptContext.substring(0, 200) + '...'); // Diagnostic log
+
+        const chatCompletion = await textOnlyModel.generateContent({
+            contents: [{
+                role: "user",
+                parts: [
+                    { text: `As an expert AWS Security and Compliance Advisor, provide a concise and accurate answer to the following user query.
+                    If the query is about best practices, list key actionable steps (1-3 bullet points).
+                    If the query is about a compliance standard, briefly explain its relevance to AWS and key considerations.
+                    Focus on practical, actionable advice. Provide your answer directly.` },
+                    { text: `User's Query: ${promptContext}` }
+                ]
+            }],
+            generationConfig: {
+                maxOutputTokens: 200, // Balanced for concise but informative answers
+                temperature: 0.3, // Lower temperature for more factual and direct responses
+            },
+        });
+        const response = chatCompletion.response;
+        const text = response.text();
+        console.log('Gemini security/compliance response received:', text.substring(0, 100) + '...'); // Diagnostic log
+        res.json({ securityComplianceResponse: text }); // Send the AI's response back
+    } catch (error) {
+        console.error('Error generating AI security/compliance response:', error);
+        res.status(500).json({
+            error: 'Failed to generate AI security/compliance response.',
             details: error.message || 'An unknown error occurred.',
             geminiErrorDetail: error.response ? JSON.stringify(error.response.candidates, null, 2) : 'No specific Gemini error response.'
         });
